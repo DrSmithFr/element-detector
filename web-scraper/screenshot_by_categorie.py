@@ -6,11 +6,7 @@ import selenium
 from selenium import webdriver
 from selenium.common import WebDriverException
 
-Resolution = {
-    'name': str,
-    'height': int,
-    'width': int,
-}
+from src.models.Resolution import Resolution
 
 DESKTOP_RESOLUTIONS = [
     {
@@ -182,8 +178,8 @@ def accept_cookies():
     # (you need to accept the cookies manually the first time)
     # (you can use config/categories/homepage to find all websites)
     options = webdriver.ChromeOptions()
-    options.add_argument('--user-data-dir=~/.config/google-chrome')
-    options.add_argument('--profile-directory=Default')
+    options.add_argument('--user-data-dir=.google-chrome')
+    options.add_argument('--profile-directory=.google-profile')
 
     # Initialize the Chrome driver
     print("Initializing Chrome driver...")
