@@ -14,15 +14,14 @@ MOBILE_RESOLUTIONS = [
     Resolution(name='iPhone SE', width=375, height=667),
 ]
 
-CHUNK_SIZE_PX = 200
-DEAD_ZONE_PX = 200
+CHUNK_SIZE_PX = 300
+DEAD_ZONE_PX = 100
 
 
 @click.command()
 @click.argument('url', type=str, required=True)
 @click.option('--skip', default=False, is_flag=True)
-@click.option('--pages', default=2, type=int, help="Number of pages to screenshot")
-def main(url: str, skip: bool, pages: int):
+def main(url: str, skip: bool):
     """Script to take a screenshot of a URL using Selenium with Chrome."""
 
     # find the resolution of the device
@@ -47,7 +46,7 @@ def main(url: str, skip: bool, pages: int):
     # for each file, take a screenshot of the urls in the file
     # save the screenshot in the folder dataset/{category_name}/
     try:
-        take_screenshot(driver, url, skip, pages)
+        take_screenshot(driver, url, skip)
     except Exception as e:
         print(f"An error occurred: {e}")
     finally:
@@ -63,8 +62,7 @@ def resize_screenshot(input_file: str, resolution: Resolution):
 
 def take_screenshot(driver: webdriver.Chrome,
                     url: str,
-                    skip: bool,
-                    pages: int = 2):
+                    skip: bool):
     """Take a screenshot of the specified URL using the specified driver."""
 
     # Create a slug from the URL to use as a filename
@@ -83,7 +81,7 @@ def take_screenshot(driver: webdriver.Chrome,
         return
 
     # Wait for the page to load
-    time.sleep(3)
+    time.sleep(1)
 
     # Create the output folder if it does not exist
     output_folder = f"var/{url_slug}"
@@ -94,36 +92,68 @@ def take_screenshot(driver: webdriver.Chrome,
     print(f"Taking screenshot ...")
 
     # get width and height of the browser window
-    width = driver.execute_script("return window.innerWidth;")
-    height = driver.execute_script("return window.innerHeight;")
+    screen = {
+        "width": driver.execute_script("return screen.width;"),
+        "height": driver.execute_script("return screen.height;"),
+        "pixel_ratio": get_pixel_ratio(driver)
+    }
+    print(" > Screen:", screen)
 
     # let user close every popup manually
     if not skip:
         input("Press Enter to continue...")
 
+    # check if body height is bigger than the window height
+    body: dict = {
+        "width": driver.execute_script("return document.body.clientWidth;"),
+        "height": driver.execute_script("return document.body.clientHeight;"),
+        "scroll_max": driver.execute_script("return document.body.scrollHeight;"),
+    }
+
+    body['nb_page'] = math.ceil(body['height'] / screen['height'])
+    print(" > Body:", body)
+
     # Take first page screenshot
-    if pages == 1:
+    if body['nb_page'] == 1:
         output = f"{output_folder}/screenshot.png"
         driver.save_screenshot(output)
         return 0
     else:
         driver.save_screenshot(f"{output_folder}/page_0.png")
 
-    nb_chunks_by_page = math.ceil(height / CHUNK_SIZE_PX)
-    nb_screenshots = nb_chunks_by_page * pages
-    pixel_ratio = get_pixel_ratio(driver)
+    # Take the full size screenshot
+    print(f"Taking partial screenshots ...")
+
+    partial = {
+        "dead_zone": DEAD_ZONE_PX,
+        "chunk_size": CHUNK_SIZE_PX,
+        "nb_screenshots": math.ceil((body['height'] - screen['height'] - DEAD_ZONE_PX) / CHUNK_SIZE_PX),
+    }
+
+    print(" > Partial:", partial)
+
+    print(f"Number of screenshots needed: {partial['nb_screenshots']}")
 
     screenshot_parts = []
 
-    scroll = DEAD_ZONE_PX * pixel_ratio
+    scroll_diff = 0
 
     # Take a screenshot of each chunk of the page
-    for i in range(nb_screenshots):
-        print(f"Taking screenshot {i + 1} of {nb_screenshots} ...")
-        driver.execute_script(f"window.scrollTo(0, {scroll});")
+    for i in range(partial['nb_screenshots']):
+        scroll_offset = screen['height'] + (i * partial['chunk_size']) - partial['dead_zone']
 
-        scroll += CHUNK_SIZE_PX
-        time.sleep(1)
+        print(f" > Scroll offset: {scroll_offset}")
+        print(f" > Display from: {scroll_offset} to {scroll_offset + screen['height']}")
+
+        if scroll_offset + screen['height'] > body['scroll_max']:
+            scroll_diff = body['scroll_max'] - (screen['height'] + scroll_offset)
+            scroll_offset = body['scroll_max']
+
+        print(f"Taking screenshot {i + 1} of {partial['nb_screenshots']} ...")
+        driver.execute_script(f"window.scrollTo(0, {scroll_offset});")
+
+        if scroll_diff != 0:
+            print(f" > Scroll diff: {scroll_diff}")
 
         output = f"{output_folder}/part_{i}.png"
         driver.save_screenshot(output)
@@ -131,46 +161,75 @@ def take_screenshot(driver: webdriver.Chrome,
         if not os.path.exists(output):
             print(f"Screenshot {output} was not taken!")
             raise Exception(f"Screenshot {output} not taken!")
-        else:
-            print(f"Screenshot successfully saved to {output}")
 
     # Chunking screenshot
     print(f"Chunking screenshot ...")
 
-    for i in range(nb_screenshots):
+    for i in range(partial['nb_screenshots']):
         output = f"{output_folder}/part_{i}_chunk.png"
-        crop_chunk(
-            f"{output_folder}/part_{i}.png",
-            output,
-            CHUNK_SIZE_PX * pixel_ratio,
-            DEAD_ZONE_PX * pixel_ratio
-        )
+
+        if i != (partial['nb_screenshots'] - 1):
+            crop_chunk(
+                f"{output_folder}/part_{i}.png",
+                output,
+                partial['chunk_size'],
+                partial['dead_zone'],
+                screen['pixel_ratio']
+            )
+        else:
+            crop_queue(
+                f"{output_folder}/part_{i}.png",
+                output,
+                -scroll_diff,
+                partial['dead_zone'],
+                screen['pixel_ratio']
+            )
+
         screenshot_parts.append(output)
 
     # Gluing screenshot
     print(f"Gluing screenshot ...")
 
     screenshot_size = (
-        width * pixel_ratio,
-        height * pixel_ratio * (pages + 1)
+        screen['width'],
+        body['scroll_max']
     )
 
     screenshot = Image.new('RGB', screenshot_size)
 
-    for i in range(-1, nb_screenshots):
-        if i == -1:
-            screenshot.paste(
-                Image.open(f"{output_folder}/page_0.png"),
-                (0, 0)
-            )
-        else:
-            page_height = height * pixel_ratio
-            chunk_height = CHUNK_SIZE_PX * pixel_ratio
+    for i in range(-1, partial['nb_screenshots']):
+        page_height = screen['height']
+        chunk_height = partial['chunk_size']
 
-            screenshot.paste(
-                Image.open(screenshot_parts[i]),
-                (0, page_height + (i * chunk_height))
+        if i == -1:
+            image = Image.open(f"{output_folder}/page_0.png")
+
+            # resize image to aspect ratio 1:1
+            image = image.resize(
+                (
+                    int(screen['width']),
+                    int(screen['height'])
+                ),
+                Image.ADAPTIVE
             )
+
+            screenshot.paste(image, (0, 0))
+        else:
+            image = Image.open(screenshot_parts[i])
+
+            # get image original size
+            image_width, image_height = image.size
+
+            # resize image to aspect ratio 1:1
+            image = image.resize(
+                (
+                    int(screen['width']),
+                    int(image_height / screen['pixel_ratio'])
+                ),
+                Image.ADAPTIVE
+            )
+
+            screenshot.paste(image, (0, page_height + (i * chunk_height)))
 
     output = f"{output_folder}/screenshot.png"
 
@@ -181,20 +240,60 @@ def take_screenshot(driver: webdriver.Chrome,
 def crop_chunk(image_path: str,
                output_path: str,
                chunk_size_px: int,
-               dead_zone_px: int):
+               dead_zone_px: int,
+               pixel_ratio: int):
     # Open the image
     original_image = Image.open(image_path)
 
     # Get the dimensions of the original image
     width, height = original_image.size
 
-    # Set the crop box to keep the bottom 100 pixels
+    dead_zone_screen = dead_zone_px * pixel_ratio
+    chunk_size_screen = chunk_size_px * pixel_ratio
+
+    # Set the crop box to keep the top 100 pixels
     crop_box = (
         0,
-        height - (chunk_size_px + dead_zone_px),
+        dead_zone_screen,
         width,
-        height - dead_zone_px
+        dead_zone_screen + chunk_size_screen
     )
+
+    # Crop the image
+    cropped_image = original_image.crop(crop_box)
+
+    # Save the cropped image
+    cropped_image.save(output_path)
+
+
+def crop_queue(image_path: str,
+               output_path: str,
+               scroll_diff: int,
+               dead_zone_px: int,
+               pixel_ratio: int):
+    # Open the image
+    original_image = Image.open(image_path)
+
+    # Get the dimensions of the original image
+    width, height = original_image.size
+
+    print(f" > Scroll diff: {scroll_diff}")
+
+    # Set the crop box to keep the bottom 100 pixels
+    if scroll_diff == 0:
+        crop_box = (
+            0,
+            scroll_diff + dead_zone_px,
+            width,
+            height
+        )
+    else:
+        crop_box = (
+            0,
+            height - scroll_diff,
+            width,
+            height
+        )
 
     # Crop the image
     cropped_image = original_image.crop(crop_box)
