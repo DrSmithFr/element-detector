@@ -21,7 +21,8 @@ DEAD_ZONE_PX = 100
 @click.command()
 @click.argument('url', type=str, required=True)
 @click.option('--skip', default=False, is_flag=True)
-def main(url: str, skip: bool):
+@click.option('--parallax', default=False, is_flag=True)
+def main(url: str, skip: bool, parallax: bool):
     """Script to take a screenshot of a URL using Selenium with Chrome."""
 
     # find the resolution of the device
@@ -46,7 +47,7 @@ def main(url: str, skip: bool):
     # for each file, take a screenshot of the urls in the file
     # save the screenshot in the folder dataset/{category_name}/
     try:
-        take_screenshot(driver, url, skip)
+        take_screenshot(driver, url, skip, parallax)
     except Exception as e:
         print(f"An error occurred: {e}")
     finally:
@@ -62,7 +63,8 @@ def resize_screenshot(input_file: str, resolution: Resolution):
 
 def take_screenshot(driver: webdriver.Chrome,
                     url: str,
-                    skip: bool):
+                    skip: bool,
+                    parallax: bool):
     """Take a screenshot of the specified URL using the specified driver."""
 
     # Create a slug from the URL to use as a filename
@@ -81,7 +83,10 @@ def take_screenshot(driver: webdriver.Chrome,
         return
 
     # Wait for the page to load
-    time.sleep(1)
+    if parallax:
+        time.sleep(3)
+    else:
+        time.sleep(1)
 
     # Create the output folder if it does not exist
     output_folder = f"var/{url_slug}"
@@ -152,6 +157,9 @@ def take_screenshot(driver: webdriver.Chrome,
         print(f"Taking screenshot {i + 1} of {partial['nb_screenshots']} ...")
         driver.execute_script(f"window.scrollTo(0, {scroll_offset});")
 
+        if parallax:
+            time.sleep(1)
+
         if scroll_diff != 0:
             print(f" > Scroll diff: {scroll_diff}")
 
@@ -196,6 +204,7 @@ def take_screenshot(driver: webdriver.Chrome,
     )
 
     screenshot = Image.new('RGB', screenshot_size)
+    total_height = 0
 
     for i in range(-1, partial['nb_screenshots']):
         page_height = screen['height']
@@ -213,27 +222,33 @@ def take_screenshot(driver: webdriver.Chrome,
                 Image.ADAPTIVE
             )
 
+            total_height += screen['height']
             screenshot.paste(image, (0, 0))
         else:
             image = Image.open(screenshot_parts[i])
 
             # get image original size
             image_width, image_height = image.size
+            height = int(image_height / screen['pixel_ratio'])
 
             # resize image to aspect ratio 1:1
             image = image.resize(
                 (
                     int(screen['width']),
-                    int(image_height / screen['pixel_ratio'])
+                    int(height)
                 ),
                 Image.ADAPTIVE
             )
 
+            total_height += height
             screenshot.paste(image, (0, page_height + (i * chunk_height)))
 
     output = f"{output_folder}/screenshot.png"
 
+    # Final crop to ensure height is correct even on parallax websites
+    screenshot = screenshot.crop((0, 0, screen['width'], total_height))
     screenshot.save(output)
+
     print(f"Screenshot successfully saved to {output}")
 
 
