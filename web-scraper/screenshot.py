@@ -1,5 +1,6 @@
 import math
 import os
+import shutil
 import time
 
 import click
@@ -11,7 +12,20 @@ from selenium.common import WebDriverException
 from src.models.Resolution import Resolution
 
 MOBILE_RESOLUTIONS = [
-    Resolution(name='iPhone SE', width=375, height=667),
+    Resolution(name='iPhone SE', width=375, height=667, pixel_ratio=2, is_touch=True),
+    Resolution(name='iPhone 12 Pro', width=390, height=844, pixel_ratio=3, is_touch=True),
+    Resolution(name='iPhone 12 Pro Max', width=430, height=932, pixel_ratio=3, is_touch=True),
+
+    Resolution(name='iPad Mini - Vertical', width=768, height=1024, pixel_ratio=3, is_touch=True),
+    Resolution(name='iPad Mini - Horizontal', width=1024, height=768, pixel_ratio=3, is_touch=True),
+
+    Resolution(name='720p', width=1280, height=720, pixel_ratio=1),
+    Resolution(name='1080p', width=1920, height=1080, pixel_ratio=1),
+    Resolution(name='1440p', width=2560, height=1440, pixel_ratio=1),
+
+    Resolution(name='4K', width=3840, height=2160, pixel_ratio=1),
+    Resolution(name='5K', width=5120, height=2880, pixel_ratio=1),
+    Resolution(name='8K', width=7680, height=4320, pixel_ratio=1),
 ]
 
 CHUNK_SIZE_PX = 300
@@ -26,7 +40,21 @@ def main(url: str, skip: bool, parallax: bool):
     """Script to take a screenshot of a URL using Selenium with Chrome."""
 
     # find the resolution of the device
-    resolution = MOBILE_RESOLUTIONS[0]
+    resolution = MOBILE_RESOLUTIONS[4]
+
+    # Ask the to choose a resolution
+    print(" > Select a resolution:")
+    for i, res in enumerate(MOBILE_RESOLUTIONS):
+        print(f"{i + 1}. {res['name']}")
+
+    choice = input("Enter your choice: ")
+    if choice.isdigit():
+        choice = int(choice)
+        if 0 < choice <= len(MOBILE_RESOLUTIONS):
+            resolution = MOBILE_RESOLUTIONS[choice - 1]
+            print(f" > You chose {resolution['name']}")
+        else:
+            raise Exception("Invalid choice, using default resolution.")
 
     # Load the user profile to avoid cookie popups
     # (you need to accept the cookies manually the first time)
@@ -34,7 +62,19 @@ def main(url: str, skip: bool, parallax: bool):
     options = webdriver.ChromeOptions()
     options.add_argument('--user-data-dir=.google-chrome')
     options.add_argument('--profile-directory=.google-profile')
-    options.add_experimental_option('mobileEmulation', {'deviceName': resolution['name']})  # Emulate a mobile device
+    options.add_argument(f"--window-size={resolution['width']},{resolution['height']}")
+
+    if 'is_touch' in resolution and resolution['is_touch']:
+        options.add_experimental_option(
+            "mobileEmulation",
+            {
+                "deviceMetrics": {
+                    "width": resolution['width'],
+                    "height": resolution['height'],
+                    "pixelRatio": resolution['pixel_ratio']
+                },
+            }
+        )
 
     # Set Chrome as headless to avoid resolution issues
     # options.add_argument('--headless')  # Run Chrome in headless mode (without a graphical interface)
@@ -47,7 +87,7 @@ def main(url: str, skip: bool, parallax: bool):
     # for each file, take a screenshot of the urls in the file
     # save the screenshot in the folder dataset/{category_name}/
     try:
-        take_screenshot(driver, url, skip, parallax)
+        take_screenshot(driver, resolution, url, skip, parallax)
     except Exception as e:
         print(f"An error occurred: {e}")
     finally:
@@ -62,6 +102,7 @@ def resize_screenshot(input_file: str, resolution: Resolution):
 
 
 def take_screenshot(driver: webdriver.Chrome,
+                    resolution: Resolution,
                     url: str,
                     skip: bool,
                     parallax: bool):
@@ -89,9 +130,9 @@ def take_screenshot(driver: webdriver.Chrome,
         time.sleep(1)
 
     # Create the output folder if it does not exist
-    output_folder = f"var/{url_slug}"
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
+    cache_folder = f"var/{url_slug}"
+    if not os.path.exists(cache_folder):
+        os.makedirs(cache_folder)
 
     # Take the full size screenshot
     print(f"Taking screenshot ...")
@@ -120,11 +161,13 @@ def take_screenshot(driver: webdriver.Chrome,
 
     # Take first page screenshot
     if body['nb_page'] == 1:
-        output = f"{output_folder}/screenshot.png"
-        driver.save_screenshot(output)
+        remove_cache_folder(cache_folder)
+        filename = get_screenshot_filename(resolution)
+        driver.save_screenshot(filename)
+        print(f"Screenshot successfully saved to {filename}")
         return 0
     else:
-        driver.save_screenshot(f"{output_folder}/page_0.png")
+        driver.save_screenshot(f"{cache_folder}/page_0.png")
 
     # Take the full size screenshot
     print(f"Taking partial screenshots ...")
@@ -163,7 +206,7 @@ def take_screenshot(driver: webdriver.Chrome,
         if scroll_diff != 0:
             print(f" > Scroll diff: {scroll_diff}")
 
-        output = f"{output_folder}/part_{i}.png"
+        output = f"{cache_folder}/part_{i}.png"
         driver.save_screenshot(output)
 
         if not os.path.exists(output):
@@ -174,11 +217,11 @@ def take_screenshot(driver: webdriver.Chrome,
     print(f"Chunking screenshot ...")
 
     for i in range(partial['nb_screenshots']):
-        output = f"{output_folder}/part_{i}_chunk.png"
+        output = f"{cache_folder}/part_{i}_chunk.png"
 
         if i != (partial['nb_screenshots'] - 1):
             crop_chunk(
-                f"{output_folder}/part_{i}.png",
+                f"{cache_folder}/part_{i}.png",
                 output,
                 partial['chunk_size'],
                 partial['dead_zone'],
@@ -186,7 +229,7 @@ def take_screenshot(driver: webdriver.Chrome,
             )
         else:
             crop_queue(
-                f"{output_folder}/part_{i}.png",
+                f"{cache_folder}/part_{i}.png",
                 output,
                 -scroll_diff,
                 partial['dead_zone'],
@@ -211,7 +254,7 @@ def take_screenshot(driver: webdriver.Chrome,
         chunk_height = partial['chunk_size']
 
         if i == -1:
-            image = Image.open(f"{output_folder}/page_0.png")
+            image = Image.open(f"{cache_folder}/page_0.png")
 
             # resize image to aspect ratio 1:1
             image = image.resize(
@@ -243,13 +286,14 @@ def take_screenshot(driver: webdriver.Chrome,
             total_height += height
             screenshot.paste(image, (0, page_height + (i * chunk_height)))
 
-    output = f"{output_folder}/screenshot.png"
-
     # Final crop to ensure height is correct even on parallax websites
     screenshot = screenshot.crop((0, 0, screen['width'], total_height))
-    screenshot.save(output)
 
-    print(f"Screenshot successfully saved to {output}")
+    remove_cache_folder(cache_folder)
+    filename = get_screenshot_filename(resolution)
+
+    screenshot.save(filename)
+    print(f"Screenshot successfully saved to {filename}")
 
 
 def crop_chunk(image_path: str,
@@ -321,6 +365,18 @@ def get_pixel_ratio(driver):
     pixel_ratio_script = "return window.devicePixelRatio || 1;"
     pixel_ratio = driver.execute_script(pixel_ratio_script)
     return pixel_ratio
+
+
+def remove_cache_folder(cache_folder: str):
+    try:
+        shutil.rmtree(cache_folder)
+        print(f"Cache '{cache_folder}' and its contents have been successfully removed.")
+    except OSError as e:
+        print(f"Error: {e}")
+
+
+def get_screenshot_filename(resolution: Resolution):
+    return f"screenshots/screenshot-{resolution['width']}x{resolution['height']}-{os.urandom(8).hex()}.png"
 
 
 if __name__ == '__main__':
